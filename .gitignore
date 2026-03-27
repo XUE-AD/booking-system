@@ -1,0 +1,14 @@
+# Google Cloud Platform Service Account Key
+service-account-key.json
+
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+staticfiles/
+db.sqlite3
+
+# Google OAuth 敏感檔案 - 不要上傳到 git
+token.json
+credentials.json
