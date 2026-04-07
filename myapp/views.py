@@ -11,10 +11,19 @@ from rest_framework.views import exception_handler as drf_exception_handler
 from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 
+import logging
+from django.conf import settings as django_settings
+from django.utils.dateparse import parse_datetime
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+
 from .models import (
     Member, Role, Staff, Teacher, Student,
-    Project, Booking, ProjectList
+    Project, Booking, ProjectList, CalendarSyncState
 )
+from .google_calendar import GoogleCalendarService
+
+logger = logging.getLogger(__name__)
 from .serializers import (
     MemberSerializer, MemberCreateSerializer, RoleSerializer,
     TeacherSerializer,
@@ -425,3 +434,98 @@ class LoginView(APIView):
                 return _error('UNAUTHORIZED', 'Invalid email or password.', status_code=401)
 
         return _success(MemberSerializer(member).data)
+
+
+# ── Google Calendar Webhook ───────────────────────────────────────────────────
+
+def _sync_event_to_booking(event):
+    """將 Google Calendar 事件異動同步回 Booking DB。"""
+    event_id = event.get('id')
+    if not event_id:
+        return
+
+    booking = Booking.objects.filter(meeting_id=event_id).first()
+    if not booking:
+        return  # 非本系統建立的事件，忽略
+
+    if event.get('status') == 'cancelled':
+        logger.info("Booking %s deleted due to Google Calendar cancellation", booking.id)
+        booking.delete()
+        return
+
+    updated = False
+
+    summary = event.get('summary')
+    if summary and summary != booking.title:
+        booking.title = summary
+        updated = True
+
+    start_str = event.get('start', {}).get('dateTime')
+    end_str   = event.get('end', {}).get('dateTime')
+
+    if start_str:
+        new_start = parse_datetime(start_str)
+        if new_start and new_start != booking.start_time:
+            booking.start_time = new_start
+            updated = True
+
+    if end_str:
+        new_end = parse_datetime(end_str)
+        if new_end and new_end != booking.end_time:
+            booking.end_time = new_end
+            updated = True
+
+    description = event.get('description')
+    if description is not None and description != booking.purpose:
+        booking.purpose = description
+        updated = True
+
+    if updated:
+        booking.save()
+        logger.info("Booking %s synced from Google Calendar (event_id=%s)", booking.id, event_id)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CalendarWebhookView(APIView):
+    """
+    POST /api/calendar/webhook/
+    接收 Google Calendar Push Notification，同步異動到 Booking DB。
+    """
+    authentication_classes = []
+    permission_classes = []
+
+    def post(self, request):
+        token     = request.headers.get('X-Goog-Channel-Token', '')
+        state     = request.headers.get('X-Goog-Resource-State', '')
+        channel_id = request.headers.get('X-Goog-Channel-Id', '')
+
+        if token != django_settings.CALENDAR_WEBHOOK_TOKEN:
+            return Response(status=403)
+
+        if state == 'sync':
+            # 初始確認通知，不需處理
+            return Response(status=200)
+
+        try:
+            sync_state = CalendarSyncState.objects.get(channel_id=channel_id)
+        except CalendarSyncState.DoesNotExist:
+            logger.warning("Calendar webhook: unknown channel_id=%s", channel_id)
+            return Response(status=200)
+
+        if not sync_state.sync_token:
+            return Response(status=200)
+
+        try:
+            changed_events, new_sync_token = GoogleCalendarService.get_changed_events(
+                sync_state.sync_token
+            )
+            sync_state.sync_token = new_sync_token
+            sync_state.save(update_fields=['sync_token', 'updated_at'])
+
+            for event in changed_events:
+                _sync_event_to_booking(event)
+
+        except Exception as e:
+            logger.error("Calendar webhook processing error: %s", e)
+
+        return Response(status=200)

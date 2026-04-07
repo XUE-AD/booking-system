@@ -137,3 +137,6 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'myapp.views.custom_exception_handler',
 }
+
+# Google Calendar Webhook 驗證 token
+CALENDAR_WEBHOOK_TOKEN = os.environ.get('CALENDAR_WEBHOOK_TOKEN', '')

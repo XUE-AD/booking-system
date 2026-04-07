@@ -280,6 +280,18 @@ class Teacher(models.Model):
         db_table_comment = 'teacher'
 
 
+class CalendarSyncState(models.Model):
+    """儲存 Google Calendar Webhook 的 channel 和 sync token。"""
+    channel_id  = models.TextField(unique=True)
+    resource_id = models.TextField(blank=True, null=True)
+    sync_token  = models.TextField(blank=True, null=True)
+    expiration  = models.BigIntegerField(blank=True, null=True)  # Unix ms
+    updated_at  = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'calendar_sync_state'
+
+
 class ProjectList(models.Model):
     id = models.UUIDField(primary_key=True)
     points = models.IntegerField(blank=True, null=True)

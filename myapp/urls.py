@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     MemberViewSet, RoleViewSet, TeacherViewSet, StudentViewSet,
     BookingViewSet, ProjectViewSet, TeacherAvailabilityViewSet,
-    ProjectListViewSet, LoginView
+    ProjectListViewSet, LoginView, CalendarWebhookView
 )
 
 # 建立 Router
@@ -21,6 +21,7 @@ router.register(r'project-list', ProjectListViewSet, basename='project-list')
 urlpatterns = [
     path('', include(router.urls)),
     path('auth/login/', LoginView.as_view(), name='login'),
+    path('calendar/webhook/', CalendarWebhookView.as_view(), name='calendar-webhook'),
 ]
 
 """

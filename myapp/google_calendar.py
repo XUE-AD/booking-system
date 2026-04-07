@@ -96,3 +96,47 @@ class GoogleCalendarService:
             'meet_link': event.get('hangoutLink'),
             'event_id': event.get('id'),
         }
+
+    @staticmethod
+    def get_initial_sync_token():
+        """取得初始 sync token（用於之後 get_changed_events）。"""
+        service = GoogleCalendarService._get_service()
+        response = service.events().list(calendarId='primary').execute()
+        return response.get('nextSyncToken')
+
+    @staticmethod
+    def watch_calendar(callback_url, channel_id, expiration_days=7):
+        """向 Google Calendar 註冊 Webhook。"""
+        import time
+        from django.conf import settings as django_settings
+
+        service = GoogleCalendarService._get_service()
+        expiration_ms = int((time.time() + expiration_days * 86400) * 1000)
+
+        body = {
+            'id': channel_id,
+            'type': 'web_hook',
+            'address': callback_url,
+            'token': django_settings.CALENDAR_WEBHOOK_TOKEN,
+            'expiration': expiration_ms,
+        }
+        return service.events().watch(calendarId='primary', body=body).execute()
+
+    @staticmethod
+    def stop_watching(channel_id, resource_id):
+        """取消 Webhook 訂閱。"""
+        service = GoogleCalendarService._get_service()
+        service.channels().stop(body={
+            'id': channel_id,
+            'resourceId': resource_id,
+        }).execute()
+
+    @staticmethod
+    def get_changed_events(sync_token):
+        """回傳自 sync_token 以來有異動的事件 list 和新的 sync_token。"""
+        service = GoogleCalendarService._get_service()
+        response = service.events().list(
+            calendarId='primary',
+            syncToken=sync_token,
+        ).execute()
+        return response.get('items', []), response.get('nextSyncToken')
