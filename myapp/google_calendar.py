@@ -98,6 +98,48 @@ class GoogleCalendarService:
         }
 
     @staticmethod
+    def update_event(event_id, title=None, description=None,
+                     start_time=None, end_time=None,
+                     attendee_emails=None, timezone='Asia/Taipei'):
+        """更新 Google Calendar 活動。"""
+        service = GoogleCalendarService._get_service()
+        body = {}
+
+        if title is not None:
+            body['summary'] = title
+        if description is not None:
+            body['description'] = description
+        if start_time is not None:
+            taipei_tz = ZoneInfo(timezone)
+            body['start'] = {
+                'dateTime': start_time.astimezone(taipei_tz).strftime('%Y-%m-%dT%H:%M:%S'),
+                'timeZone': timezone,
+            }
+        if end_time is not None:
+            taipei_tz = ZoneInfo(timezone)
+            body['end'] = {
+                'dateTime': end_time.astimezone(taipei_tz).strftime('%Y-%m-%dT%H:%M:%S'),
+                'timeZone': timezone,
+            }
+        if attendee_emails is not None:
+            body['attendees'] = [{'email': e} for e in attendee_emails if e]
+
+        service.events().patch(
+            calendarId='primary',
+            eventId=event_id,
+            body=body,
+        ).execute()
+
+    @staticmethod
+    def delete_event(event_id):
+        """刪除 Google Calendar 活動。"""
+        service = GoogleCalendarService._get_service()
+        service.events().delete(
+            calendarId='primary',
+            eventId=event_id,
+        ).execute()
+
+    @staticmethod
     def get_initial_sync_token():
         """取得初始 sync token（用於之後 get_changed_events）。"""
         service = GoogleCalendarService._get_service()

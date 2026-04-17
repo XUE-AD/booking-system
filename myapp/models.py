@@ -1,29 +1,9 @@
-# This is an auto-generated Django model module.
-# You'll have to do the following manually to clean this up:
-#   * Rearrange models' order
-#   * Make sure each model has one field with primary_key=True
-#   * Make sure each ForeignKey and OneToOneField has `on_delete` set to the desired behavior
-#   * Remove `managed = False` lines if you wish to allow Django to create, modify, and delete the table
-# Feel free to rename the models, but don't rename db_table values or field names.
-import json as _json
+import uuid
 from django.db import models
-from django.db.models.expressions import RawSQL
+from django.contrib.postgres.fields import ArrayField
 
 
-class SafeJSONField(models.JSONField):
-    """psycopg2 在 Supabase 連線下會預先將 json 欄位解析成 Python 物件，
-    Django JSONField 再次呼叫 json.loads() 時會報錯。
-    此 field 在值已是 Python 物件時直接回傳，避免重複解析。"""
-
-    def from_db_value(self, value, expression, connection):
-        if value is None:
-            return value
-        if isinstance(value, (dict, list, bool, int, float)):
-            return value
-        if isinstance(value, str):
-            return _json.loads(value)
-        return value
-
+# ── Django auth / session（managed=False）────────────────────────────────────
 
 class AuthGroup(models.Model):
     name = models.CharField(unique=True, max_length=150)
@@ -94,26 +74,6 @@ class AuthUserUserPermissions(models.Model):
         unique_together = (('user', 'permission'),)
 
 
-class Booking(models.Model):
-    id = models.UUIDField(primary_key=True)
-    meeting_id = models.TextField(blank=True, null=True)
-    title = models.TextField()
-    booked_by = models.ForeignKey('Role', models.DO_NOTHING, db_column='booked_by', blank=True, null=True)
-    start_time = models.DateTimeField()
-    end_time = models.DateTimeField()
-    teacher = models.ForeignKey('Teacher', models.DO_NOTHING, to_field='role_id')
-    student = models.ForeignKey('Student', models.DO_NOTHING)
-    purpose = models.TextField(blank=True, null=True)
-    booking_type = models.TextField(blank=True, null=True)
-    created_at = models.DateTimeField(blank=True, null=True)
-    updated_at = models.DateTimeField(blank=True, null=True)
-
-    class Meta:
-        managed = False
-        db_table = 'booking'
-        db_table_comment = 'booking'
-
-
 class DjangoAdminLog(models.Model):
     action_time = models.DateTimeField()
     object_id = models.TextField(blank=True, null=True)
@@ -159,148 +119,247 @@ class DjangoSession(models.Model):
         db_table = 'django_session'
 
 
-class Role(models.Model):
-    role_id = models.UUIDField(primary_key=True)
-    role_type = models.CharField(max_length=50)
-
-    class Meta:
-        managed = False
-        db_table = 'role'
-
+# ── 業務資料表 ────────────────────────────────────────────────────────────────
 
 class Member(models.Model):
-    member_id = models.UUIDField(primary_key=True)
-    id = models.BigIntegerField(db_default=RawSQL("nextval('member_id_seq'::regclass)", []))
-    name = models.TextField()
-    status = models.CharField(max_length=50, blank=True, null=True)
-    email = SafeJSONField(blank=True, null=True)
-    role_id = SafeJSONField(blank=True, null=True)
+    """會員主表。
+    emails: text[]  → 電子郵件清單
+    roles:  text[]  → 角色清單，例如 ['student', 'teacher', 'staff']
+    各角色的詳細資料存在 teachers / students / staff 表，透過 member_id FK 反向關聯。
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    name = models.TextField(default='')
+    emails = ArrayField(models.TextField(), default=list)
+    phone = models.TextField(blank=True, null=True)
+    roles = ArrayField(models.TextField(), default=list)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
     logged_at = models.DateTimeField(blank=True, null=True)
     deregistered_at = models.DateTimeField(blank=True, null=True)
-    phone = models.CharField(blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         managed = False
-        db_table = 'member'
-        db_table_comment = 'member'
+        db_table = 'members'
 
 
-class Project(models.Model):
-    project_id = models.UUIDField(primary_key=True)
-    project_topic_id = models.UUIDField(blank=True, null=True)
-    start_time = models.DateTimeField(blank=True, null=True)
-    end_time = models.DateTimeField(blank=True, null=True)
-    teacher = models.ForeignKey('Teacher', models.DO_NOTHING, to_field='role_id', blank=True, null=True)
-    student = models.ForeignKey('Student', models.DO_NOTHING, blank=True, null=True)
-    statement = models.ForeignKey('ProjectStatement', models.DO_NOTHING, blank=True, null=True)
-    classroom = models.TextField(blank=True, null=True)
+class Teacher(models.Model):
+    """老師 profile。member_id → members.id"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    member = models.ForeignKey(Member, models.DO_NOTHING, related_name='teachers')
+    nick_name = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = 'teachers'
+
+
+class Course(models.Model):
+    """Google Classroom 課程。"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    owner = models.TextField()
+    name = models.TextField()
+    status = models.TextField()
+    course_group_email = models.TextField()
+    alternate_link = models.TextField()
+    student_invitation_id = models.TextField(blank=True, null=True)
+    advisor_invitation_id = models.TextField(blank=True, null=True)
+    orientation_assignment_id = models.TextField(blank=True, null=True)
+    folder_id = models.UUIDField(blank=True, null=True)
+    classroom_course_id = models.TextField()
     created_at = models.DateTimeField(blank=True, null=True)
     updated_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         managed = False
-        db_table = 'project'
-        db_table_comment = 'project'
+        db_table = 'courses'
 
 
-class ProjectStatement(models.Model):
-    id = models.UUIDField(primary_key=True)
-    statement = models.TextField()
+class TeacherSchedule(models.Model):
+    """老師每週循環排班。
+    day_of_week: smallint[]，例如 [1, 3, 5] 表示週一三五（1=週一 … 7=週日）
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    teacher = models.ForeignKey(Teacher, models.CASCADE, related_name='schedules')
+    day_of_week = ArrayField(models.SmallIntegerField())
+    start_time = models.TimeField()
+    end_time = models.TimeField(blank=True, null=True)
     created_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         managed = False
-        db_table = 'projects_statement'
-        db_table_comment = 'projects_statement'
+        db_table = 'teacher_schedules'
+
+
+class TeacherLeave(models.Model):
+    """老師請假記錄。"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    teacher = models.ForeignKey(Teacher, models.CASCADE, related_name='leaves')
+    start_date = models.DateField()
+    end_date = models.DateField(blank=True, null=True)
+    start_time = models.TimeField(blank=True, null=True)
+    end_time = models.TimeField(blank=True, null=True)
+    reason = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'teacher_leaves'
+
+
+class TeacherProject(models.Model):
+    """老師負責的專案關聯。"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    teacher = models.ForeignKey(Teacher, models.DO_NOTHING, related_name='teacher_projects')
+    project = models.ForeignKey('Project', models.DO_NOTHING, related_name='teacher_links')
+    status = models.TextField()
+    created_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'teacher_projects'
+
+
+class Student(models.Model):
+    """學生 profile。member_id → members.id"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    member = models.ForeignKey(Member, models.DO_NOTHING, related_name='students')
+    brand = models.TextField()
+    course_id = models.UUIDField(blank=True, null=True)
+    orientation_id = models.UUIDField(blank=True, null=True)
+    drive_id = models.UUIDField(blank=True, null=True)
+    hasura_member_id = models.UUIDField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = 'students'
 
 
 class Staff(models.Model):
-    role = models.OneToOneField('Role', models.DO_NOTHING, primary_key=True)
-    id = models.BigIntegerField(db_default=RawSQL("nextval('staff_id_seq'::regclass)", []))
+    """職員 profile。member_id → members.id"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    member = models.ForeignKey(Member, models.DO_NOTHING, related_name='staff_profiles')
     auth_permission = models.TextField(blank=True, null=True)
     password_hash = models.TextField()
-    created_at = models.DateTimeField(blank=True, null=True)
-    updated_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         managed = False
         db_table = 'staff'
-        db_table_comment = 'staff'
 
 
-class Status(models.Model):
-    id = models.UUIDField(primary_key=True)
-    position = models.TextField()
+class BookingCalendar(models.Model):
+    """Google Calendar 對應表（按品牌區分）。"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    google_calendar_id = models.TextField()
+    title = models.TextField()
+    brand = models.TextField()
+    description = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(blank=True, null=True)
     updated_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         managed = False
-        db_table = 'status'
-        db_table_comment = 'status'
+        db_table = 'booking_calendars'
 
 
-class Student(models.Model):
-    role = models.OneToOneField('Role', models.DO_NOTHING, primary_key=True)
-    id = models.IntegerField(db_default=RawSQL("nextval('student_id_seq'::regclass)", []))
-    brand = SafeJSONField(blank=True, null=True)
-    classroom = models.TextField(blank=True, null=True)
-    advisor_email = models.TextField(blank=True, null=True)
-    deal_at = models.DateTimeField(blank=True, null=True)
-    contract_start_time = models.DateTimeField(blank=True, null=True)
-    service_duration_months = models.IntegerField(blank=True, null=True)
-    revoked_at = models.DateTimeField(blank=True, null=True)
-    is_course_start_email_sent = models.BooleanField(blank=True, null=True)
-    vacation_id = models.UUIDField(blank=True, null=True)
+class Booking(models.Model):
+    """預約。時間以 date + time 分開儲存。"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    member_project = models.ForeignKey('MemberProject', models.DO_NOTHING,
+                                       blank=True, null=True, related_name='bookings')
+    calendar = models.ForeignKey(BookingCalendar, models.DO_NOTHING, related_name='bookings')
+    teacher = models.ForeignKey(Teacher, models.DO_NOTHING, related_name='bookings')
+    student = models.ForeignKey(Student, models.DO_NOTHING, related_name='bookings')
+    booked_by_email = models.TextField()
+    start_date = models.DateField()
+    start_time = models.TimeField()
+    end_date = models.DateField(blank=True, null=True)
+    end_time = models.TimeField()
+    google_event_id = models.TextField()
+    meet_url = models.TextField()
+    event_url = models.TextField()
+    status = models.TextField(default='confirmed')
+    notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(blank=True, null=True)
     updated_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         managed = False
-        db_table = 'student'
-        db_table_comment = 'student'
+        db_table = 'bookings'
 
 
-class Teacher(models.Model):
-    pk = models.CompositePrimaryKey('id', 'role_id')
-    id = models.BigIntegerField(db_default=RawSQL("nextval('teacher_id_seq'::regclass)", []))
-    role = models.OneToOneField('Role', models.DO_NOTHING)
-    nick_name = models.TextField(blank=True, null=True)
-    cooperation_project = SafeJSONField(blank=True, null=True)
-    cycle_time = SafeJSONField(blank=True, null=True)
-    open_time = SafeJSONField(blank=True, null=True)
+class ProjectCategory(models.Model):
+    """專案分類。"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    name = models.TextField()
+    key = models.TextField()
     created_at = models.DateTimeField(blank=True, null=True)
     updated_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         managed = False
-        db_table = 'teacher'
-        db_table_comment = 'teacher'
+        db_table = 'project_categories'
 
+
+class Project(models.Model):
+    """專案目錄（類型表）。"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    key = models.SmallIntegerField()
+    category = models.ForeignKey(ProjectCategory, models.DO_NOTHING, related_name='projects')
+    topic = models.TextField(blank=True, null=True)
+    level = models.TextField(blank=True, null=True)
+    points = models.SmallIntegerField(blank=True, null=True)
+    sale = models.BooleanField(default=False)
+    take_cases = models.BooleanField(default=False)
+    description = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'projects'
+
+
+class MemberProject(models.Model):
+    """學生與老師的專案分配記錄（實際執行中的專案）。"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    student = models.ForeignKey(Student, models.DO_NOTHING, related_name='member_projects')
+    teacher = models.ForeignKey(Teacher, models.DO_NOTHING, related_name='member_projects')
+    project = models.ForeignKey(Project, models.DO_NOTHING, related_name='member_projects')
+    course = models.ForeignKey(Course, models.DO_NOTHING, related_name='member_projects', db_column='course_id')
+    section_id = models.TextField(blank=True, null=True)
+    start_at = models.DateField()
+    end_at = models.DateField(blank=True, null=True)
+    status = models.TextField()
+    inherit_submissions = models.BooleanField(default=False)
+    modified_from = models.UUIDField(blank=True, null=True)
+    booking_calendar = models.ForeignKey(BookingCalendar, models.DO_NOTHING,
+                                         blank=True, null=True, related_name='member_projects')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = 'member_projects'
+
+
+# ── Django managed（本系統自建）──────────────────────────────────────────────
 
 class CalendarSyncState(models.Model):
     """儲存 Google Calendar Webhook 的 channel 和 sync token。"""
-    channel_id  = models.TextField(unique=True)
+    channel_id = models.TextField(unique=True)
     resource_id = models.TextField(blank=True, null=True)
-    sync_token  = models.TextField(blank=True, null=True)
-    expiration  = models.BigIntegerField(blank=True, null=True)  # Unix ms
-    updated_at  = models.DateTimeField(auto_now=True)
+    sync_token = models.TextField(blank=True, null=True)
+    expiration = models.BigIntegerField(blank=True, null=True)  # Unix ms
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'calendar_sync_state'
-
-
-class ProjectList(models.Model):
-    id = models.UUIDField(primary_key=True)
-    points = models.IntegerField(blank=True, null=True)
-    can_take_case = models.CharField(max_length=1, blank=True, null=True)
-    project_level = models.CharField(max_length=1, blank=True, null=True)
-    serial_number = models.CharField(max_length=50, blank=True, null=True)
-    topic = models.TextField(blank=True, null=True)
-    description = models.TextField(blank=True, null=True)
-
-    class Meta:
-        managed = False
-        db_table = 'project_list'

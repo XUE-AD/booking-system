@@ -1,98 +1,61 @@
 from rest_framework import serializers
 from .models import (
-    Member, Role, Staff, Teacher, Student,
-    ProjectStatement, Project, Booking, ProjectList
+    Member, Staff, Teacher, TeacherSchedule, TeacherLeave,
+    Student, Booking, BookingCalendar, Project, ProjectCategory,
+    MemberProject, TeacherProject, Course
 )
 import uuid
 from django.contrib.auth.hashers import make_password
 
 
-# ── Helper ───────────────────────────────────────────────────────────────────
-
-def _get_member_by_role_id(role_id):
-    """透過 role_id 精確查詢 Member（member.role_id 為 JSON array）"""
-    if not role_id:
-        return None
-    return Member.objects.filter(role_id__contains=[str(role_id)]).first()
-
-
-# ── Role ─────────────────────────────────────────────────────────────────────
-
-class RoleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Role
-        fields = ['role_id', 'role_type']
-        read_only_fields = ['role_id']
-
-
 # ── Member ───────────────────────────────────────────────────────────────────
 
 class MemberSerializer(serializers.ModelSerializer):
-    role = serializers.SerializerMethodField()
-
     class Meta:
         model = Member
         fields = [
-            'member_id', 'id', 'name', 'role', 'email',
-            'created_at', 'updated_at', 'logged_at', 'deregistered_at', 'phone'
+            'id', 'name', 'emails', 'phone', 'roles',
+            'created_at', 'updated_at', 'logged_at', 'deregistered_at'
         ]
-        read_only_fields = ['member_id', 'id']
-
-    def get_role(self, obj):
-        role_ids = obj.role_id or []
-        if not role_ids:
-            return {}
-        roles = Role.objects.filter(role_id__in=role_ids)
-        return {r.role_type: str(r.role_id) for r in roles}
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 
-VALID_ROLES = {'op', 'staff', 'student', 'teacher'}
+VALID_ROLES = {'staff', 'student', 'teacher'}
 
 
 class MemberCreateSerializer(serializers.Serializer):
-    """建立 Member（同時建立 Role 及對應 profile table）"""
-    name  = serializers.CharField()
-    email = serializers.ListField(child=serializers.EmailField(), min_length=1)
-    role  = serializers.ListField(
+    """建立 Member（同時建立對應 profile table 記錄）"""
+    name = serializers.CharField()
+    emails = serializers.ListField(child=serializers.EmailField(), min_length=1)
+    roles = serializers.ListField(
         child=serializers.ChoiceField(choices=list(VALID_ROLES)),
         min_length=1,
     )
-    # ── 各角色必填欄位（依 role 內容決定是否必填）──
-    password_hash        = serializers.CharField(required=False, allow_blank=True)
-    cooperation_project  = serializers.JSONField(required=False)
-    brand                = serializers.ListField(child=serializers.CharField(), required=False)
-    classroom            = serializers.CharField(required=False, allow_blank=True)
+    # ── 各角色必填欄位 ──
+    password_hash = serializers.CharField(required=False, allow_blank=True)
+    nick_name = serializers.CharField(required=False, allow_blank=True)
+    brand = serializers.CharField(required=False, allow_blank=True)
+    hasura_member_id = serializers.UUIDField(required=False)
 
-    def validate_cooperation_project(self, value):
-        if not isinstance(value, dict):
-            raise serializers.ValidationError('cooperation_project 必須為 JSON 物件，例如 {"專案A": true, "專案B": false}')
-        return value
-
-    def validate_email(self, value):
-        # 檢查 array 內部是否有重複
+    def validate_emails(self, value):
         normalized = [e.lower() for e in value]
         if len(normalized) != len(set(normalized)):
             raise serializers.ValidationError('Email 列表中有重複的項目')
-        # 檢查每個 email 是否已存在於 DB
         for e in value:
-            if Member.objects.filter(email__icontains=e).exists():
+            if Member.objects.filter(emails__contains=[e]).exists():
                 raise serializers.ValidationError(f'{e} 已被使用')
         return value
 
     def validate(self, data):
-        roles  = data.get('role', [])
+        roles = data.get('roles', [])
         errors = {}
-
         if 'staff' in roles and not data.get('password_hash'):
-            errors['password_hash'] = 'staff 角色為必填'
-        if 'teacher' in roles and data.get('cooperation_project') is None:
-            errors['cooperation_project'] = 'teacher 角色為必填'
+            errors['password_hash'] = '請輸入密碼'
         if 'student' in roles:
             if not data.get('brand'):
                 errors['brand'] = 'student 角色為必填'
-            if not data.get('classroom'):
-                errors['classroom'] = 'student 角色為必填'
-
+            if not data.get('hasura_member_id'):
+                errors['hasura_member_id'] = 'student 角色為必填'
         if errors:
             raise serializers.ValidationError(errors)
         return data
@@ -100,260 +63,282 @@ class MemberCreateSerializer(serializers.Serializer):
     def create(self, validated_data):
         from django.db import transaction
 
-        roles = validated_data['role']
+        roles = validated_data['roles']
 
         with transaction.atomic():
-            role_map = {}  # role_type -> role_id string
+            member = Member.objects.create(
+                id=uuid.uuid4(),
+                name=validated_data['name'],
+                emails=validated_data['emails'],
+                roles=roles,
+            )
 
             for role_type in roles:
-                role = Role.objects.create(
-                    role_id=uuid.uuid4(),
-                    role_type=role_type,
-                )
-                role_map[role_type] = str(role.role_id)
-
                 if role_type == 'staff':
                     Staff.objects.create(
-                        role=role,
+                        id=uuid.uuid4(),
+                        member=member,
                         password_hash=make_password(validated_data['password_hash']),
                     )
                 elif role_type == 'teacher':
                     Teacher.objects.create(
-                        role=role,
-                        cooperation_project=validated_data.get('cooperation_project'),
+                        id=uuid.uuid4(),
+                        member=member,
+                        nick_name=validated_data.get('nick_name', ''),
                     )
                 elif role_type == 'student':
                     Student.objects.create(
-                        role=role,
-                        brand=validated_data.get('brand', []),
-                        classroom=validated_data.get('classroom', ''),
+                        id=uuid.uuid4(),
+                        member=member,
+                        brand=validated_data.get('brand', ''),
+                        hasura_member_id=validated_data.get('hasura_member_id', uuid.uuid4()),
                     )
-
-            member = Member.objects.create(
-                member_id=uuid.uuid4(),
-                name=validated_data['name'],
-                email=validated_data['email'],
-                status=','.join(roles),
-                role_id=list(role_map.values()),
-            )
-            member._role_map = role_map
 
         return member
 
     def to_representation(self, instance):
-        data = MemberSerializer(instance).data
-        # Override role field with key-value map from creation
-        if hasattr(instance, '_role_map'):
-            data['role'] = instance._role_map
-        return data
+        return MemberSerializer(instance).data
 
 
 # ── Staff ─────────────────────────────────────────────────────────────────────
 
 class StaffSerializer(serializers.ModelSerializer):
-    role_type   = serializers.CharField(source='role.role_type', read_only=True)
-    member_name  = serializers.SerializerMethodField()
-    member_email = serializers.SerializerMethodField()
+    member_name = serializers.CharField(source='member.name', read_only=True)
+    member_emails = serializers.ListField(source='member.emails', read_only=True)
 
     class Meta:
         model = Staff
         fields = [
-            'id', 'role', 'role_type', 'member_name', 'member_email',
+            'id', 'member', 'member_name', 'member_emails',
             'auth_permission', 'password_hash',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
         extra_kwargs = {'password_hash': {'write_only': True}}
 
-    def get_member_name(self, obj):
-        member = _get_member_by_role_id(obj.role_id)
-        return member.name if member else None
-
-    def get_member_email(self, obj):
-        member = _get_member_by_role_id(obj.role_id)
-        return member.email if member else None
-
 
 # ── Teacher ───────────────────────────────────────────────────────────────────
 
 class TeacherSerializer(serializers.ModelSerializer):
-    role_type    = serializers.CharField(source='role.role_type', read_only=True)
-    member_name  = serializers.SerializerMethodField()
-    member_email = serializers.SerializerMethodField()
+    member_name = serializers.CharField(source='member.name', read_only=True)
+    member_emails = serializers.ListField(source='member.emails', read_only=True)
 
     class Meta:
         model = Teacher
         fields = [
-            'id', 'role', 'role_type', 'member_name', 'member_email',
-            'nick_name', 'cooperation_project', 'cycle_time', 'open_time',
+            'id', 'member', 'member_name', 'member_emails',
+            'nick_name', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+# ── TeacherSchedule ───────────────────────────────────────────────────────────
+
+class TeacherScheduleSerializer(serializers.ModelSerializer):
+    """老師每週循環排班（teacher_schedules 表）。
+    day_of_week: smallint[]，例如 [1, 3, 5]（1=週一 … 7=週日）
+    """
+
+    class Meta:
+        model = TeacherSchedule
+        fields = [
+            'id', 'teacher', 'day_of_week',
+            'start_time', 'end_time',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
-    def get_member_name(self, obj):
-        member = _get_member_by_role_id(obj.role_id)
-        return member.name if member else None
+    def validate_day_of_week(self, value):
+        if not value:
+            raise serializers.ValidationError('day_of_week 不可為空')
+        for d in value:
+            if d < 1 or d > 7:
+                raise serializers.ValidationError('day_of_week 每個值需介於 1（週一）至 7（週日）')
+        return value
 
-    def get_member_email(self, obj):
-        member = _get_member_by_role_id(obj.role_id)
-        return member.email if member else None
+    def validate(self, data):
+        start = data.get('start_time') or (self.instance.start_time if self.instance else None)
+        end = data.get('end_time') or (self.instance.end_time if self.instance else None)
+        if start and end and end <= start:
+            raise serializers.ValidationError('end_time 必須晚於 start_time')
+        return data
+
+
+# ── TeacherLeave ──────────────────────────────────────────────────────────────
+
+class TeacherLeaveSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TeacherLeave
+        fields = [
+            'id', 'teacher', 'start_date', 'start_time',
+            'end_date', 'end_time', 'reason',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 
 # ── Student ───────────────────────────────────────────────────────────────────
 
 class StudentSerializer(serializers.ModelSerializer):
-    role_type    = serializers.CharField(source='role.role_type', read_only=True)
-    member_name  = serializers.SerializerMethodField()
-    member_email = serializers.SerializerMethodField()
+    member_name = serializers.CharField(source='member.name', read_only=True)
+    member_emails = serializers.ListField(source='member.emails', read_only=True)
 
     class Meta:
         model = Student
         fields = [
-            'id', 'role', 'role_type', 'member_name', 'member_email',
-            'brand', 'classroom', 'advisor_email',
-            'deal_at', 'contract_start_time', 'service_duration_months',
-            'revoked_at', 'is_course_start_email_sent', 'vacation_id',
-            'created_at', 'updated_at'
+            'id', 'member', 'member_name', 'member_emails',
+            'brand', 'course_id', 'orientation_id', 'drive_id',
+            'hasura_member_id', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
-    def get_member_name(self, obj):
-        member = _get_member_by_role_id(obj.role_id)
-        return member.name if member else None
 
-    def get_member_email(self, obj):
-        member = _get_member_by_role_id(obj.role_id)
-        return member.email if member else None
+# ── BookingCalendar ───────────────────────────────────────────────────────────
 
-
-# ── Project ───────────────────────────────────────────────────────────────────
-
-class ProjectSerializer(serializers.ModelSerializer):
-    teacher_name   = serializers.CharField(source='teacher.nick_name', read_only=True)
-    student_name   = serializers.SerializerMethodField()
-    statement_text = serializers.CharField(source='statement.statement', read_only=True)
-
+class BookingCalendarSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Project
-        fields = [
-            'project_id', 'project_topic_id', 'start_time', 'end_time',
-            'teacher', 'teacher_name', 'student', 'student_name',
-            'statement', 'statement_text', 'classroom',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['project_id', 'created_at', 'updated_at']
-
-    def get_student_name(self, obj):
-        if not obj.student:
-            return None
-        member = _get_member_by_role_id(obj.student.role_id)
-        return member.name if member else None
+        model = BookingCalendar
+        fields = ['id', 'google_calendar_id', 'title', 'brand', 'description',
+                  'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 
 # ── Booking ───────────────────────────────────────────────────────────────────
 
 class BookingSerializer(serializers.ModelSerializer):
-    teacher_name = serializers.CharField(source='teacher.nick_name', read_only=True)
-    student_name = serializers.SerializerMethodField()
+    teacher_nick_name = serializers.CharField(source='teacher.nick_name', read_only=True)
+    student_member_name = serializers.CharField(source='student.member.name', read_only=True)
 
     class Meta:
         model = Booking
         fields = [
-            'id', 'meeting_id', 'title', 'booked_by',
-            'start_time', 'end_time', 'teacher', 'teacher_name',
-            'student', 'student_name', 'purpose', 'booking_type',
+            'id', 'member_project', 'calendar',
+            'teacher', 'teacher_nick_name',
+            'student', 'student_member_name',
+            'booked_by_email',
+            'start_date', 'start_time', 'end_date', 'end_time',
+            'google_event_id', 'meet_url', 'event_url',
+            'status', 'notes',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
-        extra_kwargs = {'booked_by': {'required': False, 'allow_null': True}}
 
-    def get_student_name(self, obj):
-        if not obj.student:
-            return None
-        member = _get_member_by_role_id(obj.student.role_id)
-        return member.name if member else None
 
+# ── Project ───────────────────────────────────────────────────────────────────
+
+class ProjectCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectCategory
+        fields = ['id', 'name', 'key', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class ProjectSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source='category.name', read_only=True)
+
+    class Meta:
+        model = Project
+        fields = [
+            'id', 'key', 'category', 'category_name',
+            'topic', 'level', 'points', 'sale', 'take_cases',
+            'description', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+# ── MemberProject ─────────────────────────────────────────────────────────────
+
+class MemberProjectSerializer(serializers.ModelSerializer):
+    teacher_nick_name = serializers.CharField(source='teacher.nick_name', read_only=True)
+    student_member_name = serializers.CharField(source='student.member.name', read_only=True)
+    project_topic = serializers.CharField(source='project.topic', read_only=True)
+    course_name = serializers.CharField(source='course.name', read_only=True)
+    booking_calendar = serializers.PrimaryKeyRelatedField(
+        queryset=BookingCalendar.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = MemberProject
+        fields = [
+            'id',
+            'student', 'student_member_name',
+            'teacher', 'teacher_nick_name',
+            'project', 'project_topic',
+            'course', 'course_name',
+            'section_id',
+            'start_at', 'end_at', 'status',
+            'inherit_submissions', 'modified_from',
+            'booking_calendar',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_student(self, value):
+        if not Student.objects.filter(id=value.id).exists():
+            raise serializers.ValidationError('student_id 不存在')
+        return value
+
+    def validate_teacher(self, value):
+        if not Teacher.objects.filter(id=value.id).exists():
+            raise serializers.ValidationError('teacher_id 不存在')
+        return value
+
+    def validate_project(self, value):
+        if not Project.objects.filter(id=value.id).exists():
+            raise serializers.ValidationError('project_id 不存在')
+        return value
+
+    def validate_course(self, value):
+        if not Course.objects.filter(id=value.id).exists():
+            raise serializers.ValidationError('course_id 不存在')
+        return value
+
+
+# ── TeacherProject ────────────────────────────────────────────────────────────
+
+class TeacherProjectSerializer(serializers.ModelSerializer):
+    teacher_nick_name = serializers.CharField(source='teacher.nick_name', read_only=True)
+    project_topic = serializers.CharField(source='project.topic', read_only=True)
+    status = serializers.CharField(default='active')
+
+    class Meta:
+        model = TeacherProject
+        fields = [
+            'id', 'teacher', 'teacher_nick_name',
+            'project', 'project_topic',
+            'status', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 
 # ── Availability Serializers ──────────────────────────────────────────────────
 
-class OpenTimeSlotSerializer(serializers.Serializer):
-    """單筆 open_time 時段（指定日期時間）"""
-    start   = serializers.DateTimeField()
-    end     = serializers.DateTimeField()
-    enabled = serializers.BooleanField(default=True)
+class CycleScheduleSlotSerializer(serializers.Serializer):
+    """單筆週循環排班輸入。"""
+    day_of_week = serializers.ListField(
+        child=serializers.IntegerField(min_value=1, max_value=7),
+        min_length=1,
+    )
+    start_time = serializers.TimeField()
+    end_time = serializers.TimeField(required=False, allow_null=True)
 
     def validate(self, data):
-        if data.get('enabled', True) and data['end'] <= data['start']:
-            raise serializers.ValidationError("結束時間必須晚於開始時間")
+        if data.get('end_time') and data['end_time'] <= data['start_time']:
+            raise serializers.ValidationError('end_time 必須晚於 start_time')
         return data
 
 
-class CycleTimeSlotSerializer(serializers.Serializer):
-    """單筆 cycle_time 時段（週循環）day: 1=週一 … 7=週日"""
-    day     = serializers.IntegerField(min_value=1, max_value=7)
-    start   = serializers.TimeField()
-    end     = serializers.TimeField()
-    enabled = serializers.BooleanField(default=True)
-
-    def validate(self, data):
-        if data['end'] <= data['start']:
-            raise serializers.ValidationError("結束時間必須晚於開始時間")
-        return data
+class SetScheduleSerializer(serializers.Serializer):
+    """PUT /api/teachers/{id}/set_schedule/ — 完整取代老師排班"""
+    schedules = CycleScheduleSlotSerializer(many=True)
 
 
-class TeacherAvailabilitySerializer(serializers.ModelSerializer):
-    """老師可用時段（唯讀）"""
-    member_name = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Teacher
-        fields = ['id', 'member_name', 'nick_name', 'cycle_time', 'open_time']
-        read_only_fields = ['id', 'member_name', 'nick_name', 'cycle_time', 'open_time']
-
-    def get_member_name(self, obj):
-        member = _get_member_by_role_id(obj.role_id)
-        return member.name if member else None
-
-
-class SetAvailabilitySerializer(serializers.Serializer):
-    """PUT /api/teachers/{id}/set_availability/"""
-    open_time = OpenTimeSlotSerializer(many=True)
-
-
-class SetCycleTimeSerializer(serializers.Serializer):
-    """PUT /api/teachers/{id}/set_cycle_time/"""
-    cycle_time = CycleTimeSlotSerializer(many=True)
-
-
-class AddOpenTimeSerializer(serializers.Serializer):
-    """POST /api/teacher-availabilities/"""
-    member_id = serializers.UUIDField()
-    open_time = OpenTimeSlotSerializer(many=True)
-
-
-# ── Dashboard Serializers ─────────────────────────────────────────────────────
+# ── Dashboard Serializer ──────────────────────────────────────────────────────
 
 class TeacherDashboardSerializer(serializers.Serializer):
-    teacher_info             = TeacherSerializer()
-    current_projects         = ProjectSerializer(many=True)
-    upcoming_bookings        = BookingSerializer(many=True)
+    teacher_info = TeacherSerializer()
+    current_member_projects = MemberProjectSerializer(many=True)
+    upcoming_bookings = BookingSerializer(many=True)
     completed_bookings_count = serializers.IntegerField()
-
-
-
-# ── Project Serializers ───────────────────────────────────────────────────────
-
-class ProjectStatementSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ProjectStatement
-        fields = ['id', 'statement', 'created_at']
-        read_only_fields = ['id', 'created_at']
-
-
-
-class ProjectListSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ProjectList
-        fields = ['id', 'points', 'can_take_case', 'project_level', 'serial_number', 'topic', 'description']
-        read_only_fields = ['id']
